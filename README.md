@@ -116,7 +116,7 @@ The pipeline runs in the following order:
 
 
 ##  Project Structure
-
+```
 project/
 │
 ├── docker-compose.yaml
@@ -132,6 +132,7 @@ project/
 │
 └── airflowDAG/
 └── bank_etl_pipeline.py
+```
 ---
 ##  How to Run the Project
 
