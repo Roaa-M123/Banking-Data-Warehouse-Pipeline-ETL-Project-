@@ -155,11 +155,16 @@ docker-compose up -d
 ---
 
 ### 3️⃣ Open Jupyter:
-[http://localhost:8888](http://localhost:8899/)
+
+ [http://localhost:8888](http://localhost:8899/)
+ 
 ---
 ### 4️⃣ Run Simulator file:
 
+```
 python simulator.py
+```
+
 ---
 ### 5️⃣ Run Airflow
 
@@ -167,7 +172,7 @@ Ensure that the DAG file (`bank_etl_pipeline.py`) is placed inside the `dags/` d
 
 Then access Airflow UI:
 
-[http://localhost:8080](http://localhost:18080/)
+ [http://localhost:8080](http://localhost:18080/)
 
 - Turn ON the DAG: `bank_etl_pipeline`
 - Trigger it manually or let it run on schedule
