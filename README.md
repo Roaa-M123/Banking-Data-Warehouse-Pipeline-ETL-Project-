@@ -145,8 +145,10 @@ Run the following command to start all required services inside folder that cont
 
 ```bash
 docker-compose up -d
+```
 
 ---
+
 ### 3️⃣ Open Jupyter:
 [http://localhost:8888](http://localhost:8899/)
 ---
