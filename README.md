@@ -118,16 +118,20 @@ The pipeline runs in the following order:
 ##  Project Structure
 
 project/
-|__ docker-compose.yaml
-│── data/
-│── simulator.py
-│── scripts/
+│
+├── docker-compose.yaml
+├── README.md
+├── simulator.py
+│
+├── data/
+│
+├── scripts/
 │ ├── extraction.py
 │ ├── transformation.py
 │ ├── loading.py
-│── airflowDAG/
-│── README.md
-
+│
+└── airflowDAG/
+└── bank_etl_pipeline.py
 ---
 ##  How to Run the Project
 
