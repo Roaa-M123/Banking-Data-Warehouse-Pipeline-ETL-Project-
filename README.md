@@ -1,121 +1,125 @@
-# Banking-Data-Warehouse-Pipeline-ETL-Project(bankingTransactionAnalysis)
-##  Overview
+# Banking-Data-Warehouse-Pipeline-ETL-Project (bankingTransactionAnalysis)
+
+## Overview
+
 This project is an end-to-end data engineering pipeline that processes raw banking transactions into a structured data warehouse using a **Bronze → Silver → Gold architecture**. It ensures data quality, consistency, and analytics readiness.
 
 The pipeline uses **Apache Spark** for distributed processing, **Apache Airflow** for orchestration, and **Snowflake + HDFS** for storage and analytics.
 
-##  Architecture
+---
+
+## Architecture
 
 This project follows a **modern Data Lakehouse architecture** based on a multi-layer ETL pipeline:
 
-###  Bronze Layer (Raw Data)
+### Bronze Layer (Raw Data)
 - Raw banking transaction data is ingested from CSV files
-- Data is split into batches using a simulator
-- Each batch is stored in a landing zone as JSON files
-- Data is then loaded into HDFS in Parquet format
+- Data is split into 50-row batches using a simulator
+- Each batch is stored in a landing zone as a JSON file
+- Data is then loaded into HDFS in Parquet format (append mode)
 
 ---
 
-###  Silver Layer (Cleaned Data)
+### Silver Layer (Cleaned Data)
 - Data is read from the Bronze layer (HDFS)
 - Data cleaning is performed using Apache Spark:
-  - Removing duplicates
-  - Handling null values
-  - Fixing data types
-  - Dropping unnecessary columns
-- The cleaned dataset is stored back into HDFS as Parquet files
+  - Removing duplicates (keyed on TransactionID)
+  - Handling null values (numeric → 0, categorical → "Unknown")
+  - Fixing data types (timestamps, doubles, integers)
+  - Dropping unnecessary columns (DeviceID, IP Address, source, ingested_at, batch_id)
+- The cleaned dataset is stored back into HDFS as Parquet files (append mode)
 
 ---
 
-###  Gold Layer (Data Warehouse)
-- Business-ready data is created using a **Star Schema**
-- Dimension tables include:
-  - Dim Customer
-  - Dim Date
-  - Dim Location
-  - Dim Transaction Type
-  - Dim Junk (Channel + Merchant)
-- Fact table: `fact_transactions`
+### Gold Layer (Data Warehouse — Star Schema)
+- Business-ready data is created using a **Star Schema** stored in HDFS Gold
+- Dimension tables:
+
+| Table | Load Strategy | Notes |
+|---|---|---|
+| dim_date | Static | Generated once (2019–2030). Skipped if already populated. |
+| dim_customer | Append-only | New AccountIDs appended via left-anti join on MD5 surrogate key. |
+| dim_location | SCD Type 0 | Insert-only. Never updated once written. |
+| dim_transaction_type | SCD Type 0 | Insert-only. Never updated once written. |
+| dim_junk | SCD Type 0 | Channel + MerchantID composite key. Insert-only. |
+| fact_transactions | Delta (MERGE) | Matched rows updated; new rows inserted via Snowflake MERGE. |
+
+- Surrogate keys generated using MD5 hashing on natural key column(s)
 - Data is optimized for analytics and reporting
 
 ---
 
-### Snowflake Layer (Data Warehouse Storage)
-- Gold layer tables are loaded into Snowflake
+### Snowflake Layer (Cloud Data Warehouse)
+- Gold layer tables are loaded into **Snowflake (BANK_DW.GOLD_LAYER)**
 - Supports:
-  - Full load for dimension tables
-  - MERGE operations for fact table (incremental updates)
-  - Atomic swap strategy for safe loading
+  - **Atomic table swap** for dimension tables (TEMP → FINAL, drop TEMP) — zero downtime
+  - **MERGE-based incremental load** for fact table (matched → UPDATE, new → INSERT)
+  - `dim_date` is skipped on subsequent runs if already populated
 
 ---
 
-##  Pipeline Workflow (Airflow Orchestrated)
+## Pipeline Workflow (Airflow Orchestrated)
 
-The entire ETL process is fully automated using an Apache Airflow DAG (`bank_etl_pipeline`) and runs daily.
+The entire ETL process is fully automated using an Apache Airflow DAG (`bank_etl_pipeline`) running on a **daily schedule** (`catchup=False`). Each daily run processes exactly one batch.
 
-### 1️⃣ Batch Resolution
-- Airflow calculates the correct batch file based on the DAG run date
-- Each run processes exactly one batch from the landing zone
-- Batch selection is handled dynamically using XCom
-
----
-
-### 2️⃣ Data Extraction (Bronze Layer)
-- Spark job is triggered via Airflow
-- Reads the selected batch file from the landing zone
-- Loads raw data into HDFS Bronze layer in Parquet format
+### 1. Batch Resolution — `resolve_batch` (ShortCircuitOperator)
+- Airflow calculates the correct batch number from `logical_date` using `(run_date − start_date).days + 1`
+- Validates that run number is within range (1–1000); stops the DAG if out of range
+- Pushes `batch_file` path and `run_number` to XCom for downstream tasks
 
 ---
 
-### 3️⃣ Data Transformation (Silver → Gold Layer)
-- Spark performs data cleaning and transformation:
-  - Removing duplicates
-  - Handling null values
-  - Type casting
-- Builds Star Schema:
-  - Dimension tables (Customer, Date, Location, etc.)
-  - Fact table (Transactions)
+### 2. Data Extraction — `extract_to_bronze` (BashOperator)
+- Triggers `spark-submit extraction.py` via `docker exec spark-jupyter`
+- Reads the selected batch file path from XCom (`sys.argv[1]`)
+- Enforces typed `StructType` schema, then appends to HDFS Bronze layer as Parquet
 
 ---
 
-### 4️⃣ Data Archiving
-- After successful transformation:
-  - Processed Bronze Parquet files are moved to archive folder in HDFS
-  - Prevents reprocessing and avoids duplicates
+### 3. Data Transformation — `transform_to_gold` (BashOperator)
+- Triggers `spark-submit transformation.py`
+- Cleans Bronze data into Silver (dedup, null fill, type casting, drop cols)
+- Builds Star Schema in Gold: all dimension tables + `fact_transactions`
 
 ---
 
-### 5️⃣ Loading to Snowflake (Gold Layer)
-- Final Gold layer tables are loaded into Snowflake
-- Supports:
-  - Full load for dimension tables
-  - MERGE-based incremental load for fact table
-- Ensures atomic and consistent warehouse updates
+### 4. Data Archiving — `archive_bronze_hdfs` (BashOperator)
+- Moves processed Bronze Parquet files to `/bronze1/archived/` in HDFS
+- Prevents reprocessing and avoids duplicates on the next run
 
 ---
 
+### 5. Loading to Snowflake — `load_to_snowflake` (BashOperator)
+- Triggers `spark-submit loading.py` with the Snowflake connector package
+- Dimension tables loaded via atomic table swap
+- `fact_transactions` loaded via MERGE (delta load)
+- Staging table (`_STG`) written first, merged into final table, then dropped
+
+---
 
 ### Airflow DAG Structure
-The pipeline runs in the following order:
 
-1. `resolve_batch`
-2. `extract_to_bronze`
-3. `transform_to_gold`
-4. `archive_bronze_hdfs`
-5. `load_to_snowflake`
+```
+resolve_batch → extract_to_bronze → transform_to_gold → archive_bronze_hdfs → load_to_snowflake
+```
 
 ---
-##  Tech Stack
-- Apache Spark
-- Apache Airflow
-- HDFS
-- Snowflake
-- Python
-- Docker
 
+## Tech Stack
 
+| Tool | Role |
+|---|---|
+| Apache Spark | Distributed data processing (extraction, transformation) |
+| Apache Airflow | Pipeline orchestration & daily scheduling |
+| HDFS | Distributed storage for Bronze / Silver / Gold layers |
+| Snowflake | Cloud data warehouse — final analytics destination |
+| Python | ETL scripting (simulator, Spark jobs, DAG) |
+| Docker | Containerised runtime for all services |
 
-##  Project Structure
+---
+
+## Project Structure
+
 ```
 project/
 │
@@ -126,27 +130,29 @@ project/
 ├── data/
 │
 ├── scripts/
-│ ├── extraction.py
-│ ├── transformation.py
-│ ├── loading.py
+│   ├── extraction.py
+│   ├── transformation.py
+│   └── loading.py
 │
 └── airflowDAG/
-└── bank_etl_pipeline.py
+    └── bank_etl_pipeline.py
 ```
+
 ---
-##  How to Run the Project
 
-Follow these steps to set up and execute the pipeline:
+## How to Run the Project
 
-### 1️⃣ Prerequisites
+### 1. Prerequisites
+
 Make sure you have the following installed:
-- Docker
-- Docker-compose.yaml
+- [Docker](https://docs.docker.com/get-docker/)
+- [Docker Compose](https://docs.docker.com/compose/install/)
 
 ---
 
-### 2️⃣ Start the Environment
-Run the following command to start all required services inside folder that contains Docker-compose.yaml:
+### 2. Start the Environment
+
+Run the following command inside the folder that contains `docker-compose.yaml`:
 
 ```bash
 docker-compose up -d
@@ -154,28 +160,36 @@ docker-compose up -d
 
 ---
 
-### 3️⃣ Open Jupyter:
+### 3. Open Jupyter Notebook
 
- [http://localhost:8888](http://localhost:8899/)
- 
----
-### 4️⃣ Run Simulator file:
+Navigate to:
 
 ```
+http://localhost:8888
+```
+
+---
+
+### 4. Run the Simulator
+
+Pre-generate all batch files in the landing zone:
+
+```bash
 python simulator.py
 ```
 
 ---
-### 5️⃣ Run Airflow
 
-Ensure that the DAG file (`bank_etl_pipeline.py`) is placed inside the `dags/` directory, which must exist in the same project folder as `docker-compose.yaml`.
+### 5. Run Airflow
 
-Then access Airflow UI:
+Place the DAG file (`bank_etl_pipeline.py`) inside the `dags/` directory (in the same folder as `docker-compose.yaml`), then open the Airflow UI:
 
- [http://localhost:8080](http://localhost:18080/)
+```
+http://localhost:8080
+```
 
-- Turn ON the DAG: `bank_etl_pipeline`
-- Trigger it manually or let it run on schedule
+- Turn **ON** the DAG: `bank_etl_pipeline`
+- Trigger it manually or let it run on its daily schedule
 
-
-
+### 6.Architecture Diagram
+<img width="1358" height="2158" alt="image" src="https://github.com/user-attachments/assets/4a28cc0b-8ae0-4ac8-ae74-60600e77df61" />
