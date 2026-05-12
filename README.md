@@ -199,3 +199,8 @@ http://localhost:8080
 
 [![Power BI Dashboard](assets/dashboard_preview.png)](https://app.powerbi.com/groups/71ed6d4b-812b-40b5-81f6-0df68c506901/reports/e56b7285-fe22-4cd3-b3fb-a7a99f3c9ed4/b540fa21b8bfd7375ab3?experience=power-bi)
 
+### 8.notion
+## 🔗 Project Links
+
+[![Notion](https://img.shields.io/badge/Notion-Documentation-black?style=for-the-badge&logo=notion)](https://www.notion.so/BigDataProject-359c779e999080618506d93d3a3157c8)
+
